@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import axios from 'axios';
+import config from './config';
 import './App.css';
 
 function App() {
@@ -11,7 +12,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [processingStage, setProcessingStage] = useState('');
 
-  const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200MB
 
   const validateFile = (file) => {
     if (!file) {
@@ -47,7 +48,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const response = await axios.post('http://localhost:5001/api/upload', formData, {
+      const response = await axios.post(`${config.apiUrl}/api/upload`, formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
@@ -132,6 +133,33 @@ function App() {
     );
   };
 
+  const renderConnectionTable = (table) => {
+    if (!table) return null;
+    
+    return (
+      <div className="connection-table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Region 1</th>
+              <th>Region 2</th>
+              <th>Connection Strength</th>
+            </tr>
+          </thead>
+          <tbody>
+            {table.map((row, i) => (
+              <tr key={i}>
+                <td>{row['Region 1']}</td>
+                <td>{row['Region 2']}</td>
+                <td>{row['Connection Strength'].toFixed(3)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
   return (
     <div className="App">
       <header className="App-header">
@@ -148,7 +176,7 @@ function App() {
             ) : (
               <div>
                 <p>Drag and drop a NIfTI file here, or click to select one</p>
-                <p className="file-types">Supported formats: .nii, .nii.gz (Max size: 100MB)</p>
+                <p className="file-types">Supported formats: .nii, .nii.gz (Max size: 200MB)</p>
               </div>
             )}
           </div>
@@ -174,7 +202,7 @@ function App() {
           <div className="error">
             <h3>Error</h3>
             <p>{error}</p>
-            <p className="error-help">Please ensure you're uploading a valid NIfTI file (.nii or .nii.gz) under 100MB.</p>
+            <p className="error-help">Please ensure you're uploading a valid NIfTI file (.nii or .nii.gz) under 200MB.</p>
           </div>
         )}
 
@@ -190,25 +218,58 @@ function App() {
           <div className="results">
             <h2>Analysis Results</h2>
             
-            <div className="connectome-image">
-              <h3>Connectome Visualization</h3>
-              {results.connectome_image ? (
-                <img 
-                  src={`http://localhost:5001/${results.connectome_image}`} 
-                  alt="Brain Connectome" 
-                />
-              ) : (
-                <p>Connectome visualization will be available after ML model integration</p>
-              )}
-            </div>
+            <div className="visualization-grid">
+              <div className="connectome-image">
+                <h3>Brain Connectome</h3>
+                <p className="matrix-description">
+                  The brain connectome visualization shows the network of connections between different brain regions.
+                  Each node represents a brain region, and the lines between nodes show the strength of their connections.
+                </p>
+                {results.files?.connectome && (
+                  <img 
+                    src={`${config.apiUrl}/api/connectome/${results.files.connectome}`} 
+                    alt="Brain Connectome" 
+                    className="connectome-img"
+                  />
+                )}
+              </div>
 
-            <div className="connectivity-matrix">
-              <h3>Connectivity Matrix</h3>
-              <p className="matrix-description">
-                The matrix shows the strength of connections between different brain regions.
-                Hover over cells to see exact values.
-              </p>
-              {renderMatrix(results.connectivity_matrix)}
+              <div className="connectivity-matrix">
+                <h3>Connectivity Matrix</h3>
+                <p className="matrix-description">
+                  The connectivity matrix shows the strength of connections between different brain regions.
+                  Darker colors indicate stronger connections, while lighter colors indicate weaker connections.
+                  Hover over cells to see exact values.
+                </p>
+                {results.files?.matrix && (
+                  <img 
+                    src={`${config.apiUrl}/api/matrix/${results.files.matrix}`} 
+                    alt="Connectivity Matrix" 
+                    className="matrix-img"
+                  />
+                )}
+                {renderMatrix(results.connectivity_matrix)}
+              </div>
+
+              <div className="connection-table">
+                <h3>Connection Strength Table</h3>
+                <p className="table-description">
+                  This table shows the detailed view of connections between brain regions, sorted by connection strength.
+                  Positive values indicate positive correlations, while negative values indicate negative correlations.
+                </p>
+                {results.metrics?.connection_table && (
+                  renderConnectionTable(results.metrics.connection_table)
+                )}
+                {results.files?.connections && (
+                  <a 
+                    href={`${config.apiUrl}/api/connections/${results.files.connections}`}
+                    className="download-link"
+                    download
+                  >
+                    Download Full Connection Table (CSV)
+                  </a>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -219,9 +280,8 @@ function App() {
             <li>Prepare your NIfTI file (.nii or .nii.gz format)</li>
             <li>Upload the file using the drag-and-drop area or click to select</li>
             <li>Wait for the processing to complete</li>
-            <li>View the connectivity matrix and connectome visualization</li>
+            <li>View the brain connectome, connectivity matrix, and connection strength table</li>
           </ol>
-          <p className="note">Note: The connectome visualization will be available once the ML model is integrated.</p>
         </div>
       </main>
     </div>

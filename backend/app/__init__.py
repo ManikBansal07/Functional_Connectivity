@@ -6,7 +6,7 @@ def create_app():
     app = Flask(__name__)
     
     # Configure upload settings
-    app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max file size
+    app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024  # 200MB max file size
     app.config['UPLOAD_FOLDER'] = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'uploads')
     
     # Ensure upload directory exists

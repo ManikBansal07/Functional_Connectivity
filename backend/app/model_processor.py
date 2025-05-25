@@ -5,151 +5,40 @@ from nilearn import image
 from nilearn import regions
 import pandas as pd
 from typing import Tuple, Dict, Optional
-import torch
-import torch.nn as nn
-from torch_geometric.nn import GCNConv
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 from scipy.stats import zscore
-import nbformat
-import json
 import logging
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from models.funcational_connectivity_gcn import (
+    preprocess_fmri,
+    validate_connectivity_matrix,
+    create_connection_table,
+    predict_connectivity,
+    get_region_coordinates
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-class GCNConnectivity(nn.Module):
-    def __init__(self, num_regions, num_features, hidden_dim=64):
-        super(GCNConnectivity, self).__init__()
-        self.conv1 = GCNConv(num_features, hidden_dim)
-        self.conv2 = GCNConv(hidden_dim, hidden_dim)
-        self.fc = nn.Linear(hidden_dim, num_regions)
-
-    def forward(self, x, edge_index):
-        x = torch.relu(self.conv1(x, edge_index))
-        x = torch.relu(self.conv2(x, edge_index))
-        x = self.fc(x)
-        x = torch.tanh(x)  # Map to [-1, 1]
-        x = (x + x.transpose(0, 1)) / 2  # Symmetrize
-        return x
-
 class FunctionalConnectivityProcessor:
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: Optional[str] = None):
         """
-        Initialize the processor with the path to the model notebook.
+        Initialize the processor.
         
         Args:
-            model_path: Path to the .ipynb model file
+            model_path: Path to the pre-trained model file (.pth) or notebook (.ipynb)
         """
+        self.model_path = model_path
         # Load Harvard-Oxford subcortical atlas
         self.atlas = datasets.fetch_atlas_harvard_oxford('sub-maxprob-thr25-2mm')
         self.atlas_filename = self.atlas.maps
         self.labels = self.atlas.labels
         
-        # Load model from notebook
-        self.model = self.load_model(model_path)
-        
-    def load_model(self, model_path: str):
-        """Load model from Jupyter notebook."""
-        try:
-            with open(model_path, 'r', encoding='utf-8') as f:
-                notebook = nbformat.read(f, as_version=4)
-
-            # Initialize model with dummy dimensions (will be updated during processing)
-            model = GCNConnectivity(num_regions=1, num_features=1)
-            
-            # Look for model weights in the notebook
-            for cell in notebook.cells:
-                if cell.cell_type == 'code':
-                    try:
-                        # Skip cells with errors or empty outputs
-                        if not cell.outputs:
-                            continue
-                            
-                        # Look for state dict in the outputs
-                        for output in cell.outputs:
-                            if output.output_type == 'execute_result':
-                                if 'state_dict' in str(output.data):
-                                    logger.info("Found model weights in notebook output")
-                                    # Extract the state dict from the output
-                                    state_dict = output.data.get('text/plain', '')
-                                    if state_dict:
-                                        # Convert string representation to actual state dict
-                                        state_dict = eval(state_dict)
-                                        model.load_state_dict(state_dict)
-                                        break
-                    except Exception as cell_error:
-                        logger.warning(f"Error processing cell: {str(cell_error)}")
-                        continue
-            
-            model.eval()
-            return model
-            
-        except Exception as e:
-            logger.error(f"Error loading model from notebook: {str(e)}")
-            # Fallback to untrained model
-            return GCNConnectivity(num_regions=1, num_features=1)
-        
-    def load_nifti(self, file_path: str) -> nib.Nifti1Image:
-        """Load a NIfTI file."""
-        return nib.load(file_path)
-    
-    def extract_time_series(self, nifti_img: nib.Nifti1Image) -> np.ndarray:
-        """Extract time series from each ROI."""
-        # Resample atlas to match the input image
-        resampled_atlas = image.resample_to_img(
-            self.atlas_filename,
-            nifti_img,
-            interpolation='nearest'
-        )
-        
-        # Extract time series for each ROI
-        time_series = regions.img_to_signals_labels(
-            nifti_img,
-            resampled_atlas,
-            background_label=0
-        )
-        
-        # Normalize time series
-        time_series = zscore(time_series[0], axis=1, ddof=1)
-        time_series = np.nan_to_num(time_series, nan=0.0)
-        
-        return time_series
-    
-    def compute_connectivity_matrix(self, time_series: np.ndarray) -> np.ndarray:
-        """
-        Use the GCN model to compute the connectivity matrix.
-        
-        Args:
-            time_series: numpy array of shape (n_regions, n_timepoints)
-            
-        Returns:
-            numpy array of shape (n_regions, n_regions) containing the connectivity matrix
-        """
-        # Convert to torch tensor
-        features = torch.tensor(time_series, dtype=torch.float)
-        
-        # Compute correlation-based adjacency for initial graph
-        corr_matrix = np.corrcoef(time_series)
-        corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
-        edge_index = np.where(np.abs(corr_matrix) > 0.3)  # threshold of 0.3
-        edge_index = torch.tensor(np.array(edge_index), dtype=torch.long)
-        
-        # Update model dimensions
-        num_regions = time_series.shape[0]
-        num_features = time_series.shape[1]
-        self.model = GCNConnectivity(num_regions=num_regions, num_features=num_features)
-        
-        # Generate connectivity matrix
-        with torch.no_grad():
-            connectivity_matrix = self.model(features, edge_index)
-            connectivity_matrix = connectivity_matrix.numpy()
-        
-        return connectivity_matrix
-    
     def process_nifti(self, nifti_file_path: str) -> Tuple[np.ndarray, list, Dict]:
         """
         Process a NIfTI file and return connectivity information.
@@ -163,38 +52,82 @@ class FunctionalConnectivityProcessor:
             - region_names: list of region names
             - additional_metrics: dictionary of additional metrics
         """
-        # Load the NIfTI file
-        nifti_img = self.load_nifti(nifti_file_path)
-        
-        # Extract time series
-        time_series = self.extract_time_series(nifti_img)
-        
-        # Compute connectivity matrix using the GCN model
-        connectivity_matrix = self.compute_connectivity_matrix(time_series)
-        
-        # Generate heatmap visualization
-        plt.figure(figsize=(10, 10))
-        plt.imshow(connectivity_matrix, cmap='coolwarm')
-        plt.colorbar()
-        plt.title('Brain Connectivity Matrix')
-        
-        # Save the heatmap
-        heatmap_path = os.path.join('uploads', 'connectome.png')
-        plt.savefig(heatmap_path)
-        plt.close()
-        
-        # Prepare additional metrics
-        additional_metrics = {
-            'mean_connectivity': float(np.mean(connectivity_matrix)),
-            'std_connectivity': float(np.std(connectivity_matrix)),
-            'max_connectivity': float(np.max(connectivity_matrix)),
-            'min_connectivity': float(np.min(connectivity_matrix))
-        }
-        
-        return connectivity_matrix, self.labels, additional_metrics
+        try:
+            logger.info(f"Starting to process NIfTI file: {nifti_file_path}")
+            
+            # Process the NIfTI file using our GCN model
+            logger.info("Processing fMRI data with GCN model...")
+            result = predict_connectivity(nifti_file_path, ipynb_path=self.model_path)
+            
+            connectivity_matrix = np.array(result['connectivity_matrix'])
+            region_labels = result.get('region_names', [f'Region_{i}' for i in range(connectivity_matrix.shape[0])])
+            
+            # Create connection table
+            connection_table = create_connection_table(connectivity_matrix, region_labels)
+            logger.info(f"Connectivity matrix shape: {connectivity_matrix.shape}")
+            
+            # Generate heatmap visualization
+            logger.info("Generating heatmap visualization...")
+            plt.figure(figsize=(12, 10))
+            plt.imshow(connectivity_matrix, cmap='coolwarm', vmin=-1, vmax=1)
+            plt.colorbar(label='Connection Strength')
+            plt.title('Brain Connectivity Matrix')
+            plt.xlabel('Brain Regions')
+            plt.ylabel('Brain Regions')
+            
+            # Save the heatmap
+            heatmap_path = os.path.join('uploads', 'connectivity_matrix.png')
+            logger.info(f"Saving heatmap to: {heatmap_path}")
+            plt.savefig(heatmap_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Generate connectome visualization
+            logger.info("Generating connectome visualization...")
+            features, edge_index, num_regions, _, atlas_img = preprocess_fmri(nifti_file_path)
+            coords = get_region_coordinates(atlas_img, num_regions, region_labels)
+            
+            plt.figure(figsize=(12, 10))
+            from nilearn import plotting
+            plotting.plot_connectome(
+                connectivity_matrix,
+                coords,
+                node_size=40,
+                edge_threshold="80%",
+                title="Brain Network Connectome",
+                display_mode='ortho'
+            )
+            
+            # Save the connectome
+            connectome_path = os.path.join('uploads', 'connectome.png')
+            logger.info(f"Saving connectome to: {connectome_path}")
+            plt.savefig(connectome_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # Save connection table
+            connection_table_path = os.path.join('uploads', 'connection_strengths.csv')
+            connection_table.to_csv(connection_table_path, index=False)
+            logger.info(f"Saved connection table to: {connection_table_path}")
+            
+            # Prepare additional metrics
+            logger.info("Calculating additional metrics...")
+            additional_metrics = {
+                'mean_connectivity': float(np.mean(connectivity_matrix)),
+                'std_connectivity': float(np.std(connectivity_matrix)),
+                'max_connectivity': float(np.max(connectivity_matrix)),
+                'min_connectivity': float(np.min(connectivity_matrix)),
+                'num_regions': connectivity_matrix.shape[0],
+                'connection_table': connection_table.to_dict('records')
+            }
+            
+            logger.info("Successfully completed processing NIfTI file")
+            return connectivity_matrix, region_labels, additional_metrics
+            
+        except Exception as e:
+            logger.error(f"Error processing NIfTI file: {str(e)}", exc_info=True)
+            raise
 
 # Example usage:
 if __name__ == "__main__":
-    processor = FunctionalConnectivityProcessor("models/FC_Other_Models.ipynb")
+    processor = FunctionalConnectivityProcessor()
     # Test with a sample file
     # matrix, regions, metrics = processor.process_nifti("path_to_your_nifti_file.nii.gz") 
