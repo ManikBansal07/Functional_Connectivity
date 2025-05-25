@@ -1,4 +1,4 @@
-from flask import Blueprint, request, jsonify, make_response, send_file
+from flask import Blueprint, request, jsonify, make_response, send_file, current_app
 import os
 import nibabel as nib
 import numpy as np
@@ -10,15 +10,12 @@ from .model_processor import FunctionalConnectivityProcessor
 bp = Blueprint('main', __name__)
 
 # Configuration
-UPLOAD_FOLDER = 'uploads'
-MODEL_FOLDER = 'models'
 ALLOWED_EXTENSIONS = {'nii', 'nii.gz'}
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB max file size
+MODEL_FOLDER = 'models'
 
-# Create necessary directories
-for folder in [UPLOAD_FOLDER, MODEL_FOLDER]:
-    if not os.path.exists(folder):
-        os.makedirs(folder)
+# Create model directory if it doesn't exist
+if not os.path.exists(MODEL_FOLDER):
+    os.makedirs(MODEL_FOLDER)
 
 # Initialize processor with model path
 MODEL_PATH = os.path.join(MODEL_FOLDER, 'FC_Other_Models.ipynb')
@@ -29,16 +26,18 @@ def allowed_file(filename):
 
 def create_response(data, status_code=200):
     response = jsonify(data)
-    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+    response.headers.add('Access-Control-Allow-Credentials', 'true')
     return response, status_code
 
 @bp.route('/api/health', methods=['GET', 'OPTIONS'])
 def health_check():
     if request.method == 'OPTIONS':
         response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', '*')
-        response.headers.add('Access-Control-Allow-Methods', '*')
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response
     
     return create_response({'status': 'healthy', 'message': 'Server is running'})
@@ -47,9 +46,10 @@ def health_check():
 def upload_file():
     if request.method == 'OPTIONS':
         response = make_response()
-        response.headers.add('Access-Control-Allow-Origin', '*')
-        response.headers.add('Access-Control-Allow-Headers', '*')
-        response.headers.add('Access-Control-Allow-Methods', '*')
+        response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
         return response
 
     if 'file' not in request.files:
@@ -66,7 +66,7 @@ def upload_file():
         # Create a unique filename
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = secure_filename(f"{timestamp}_{file.filename}")
-        filepath = os.path.join(UPLOAD_FOLDER, filename)
+        filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], filename)
         
         # Save the file
         file.save(filepath)
@@ -86,13 +86,16 @@ def upload_file():
         })
         
     except Exception as e:
+        # Clean up the file if it exists
+        if os.path.exists(filepath):
+            os.remove(filepath)
         return create_response({'error': f'Error processing file: {str(e)}'}, 500)
 
 @bp.route('/api/connectome/<filename>', methods=['GET'])
 def get_connectome(filename):
     try:
         return send_file(
-            os.path.join(UPLOAD_FOLDER, filename),
+            os.path.join(current_app.config['UPLOAD_FOLDER'], filename),
             mimetype='image/png'
         )
     except Exception as e:
